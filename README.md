@@ -1,5 +1,7 @@
 # factlayer
 
+[![tests](https://github.com/Shantanumtk/factlayer/actions/workflows/tests.yml/badge.svg)](https://github.com/Shantanumtk/factlayer/actions/workflows/tests.yml)
+
 **Verified, comparable facts for AI agents, in one template that works for any field.**
 
 AI agents are bad at numbers. They pull statistics from scattered sources, can't say where a figure came from, and compare values from different eras or contexts as if they were the same thing. factlayer is a data layer that fixes this at the source. Every fact is stored in one universal template, with its provenance and license attached and a slot for cross-source verification, ready for any agent to query.
