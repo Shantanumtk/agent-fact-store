@@ -1,5 +1,5 @@
 [project]
-name = "factlayer"
+name = "agent-fact-store"
 version = "0.1.0"
 description = "A universal, provenance-first fact store for AI agents"
 requires-python = ">=3.11"
@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-factlayer = ["schema.sql"]
+agent_fact_store = ["schema.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

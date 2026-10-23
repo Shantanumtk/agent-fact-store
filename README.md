@@ -1,10 +1,10 @@
-# factlayer
+# Agent Fact Store
 
-[![tests](https://github.com/Shantanumtk/factlayer/actions/workflows/tests.yml/badge.svg)](https://github.com/Shantanumtk/factlayer/actions/workflows/tests.yml)
+[![tests](https://github.com/Shantanumtk/agent-fact-store/actions/workflows/tests.yml/badge.svg)](https://github.com/Shantanumtk/agent-fact-store/actions/workflows/tests.yml)
 
 **Verified, comparable facts for AI agents, in one template that works for any field.**
 
-AI agents are bad at numbers. They pull statistics from scattered sources, can't say where a figure came from, and compare values from different eras or contexts as if they were the same thing. factlayer is a data layer that fixes this at the source. Every fact is stored in one universal template, with its provenance and license attached and a slot for cross-source verification, ready for any agent to query.
+AI agents are bad at numbers. They pull statistics from scattered sources, can't say where a figure came from, and compare values from different eras or contexts as if they were the same thing. Agent Fact Store is a data layer that fixes this at the source. Every fact is stored in one universal template, with its provenance and license attached and a slot for cross-source verification, ready for any agent to query.
 
 Sports is the first field. The same template covers finance, health, film and anything else that can be described as *an entity, a metric, a time and a value*.
 
@@ -12,7 +12,7 @@ Sports is the first field. The same template covers finance, health, film and an
 
 ## What makes it different
 
-Most of the plumbing (ingestion, storage, MCP serving) is standard, and factlayer uses standard tools for it. The value is in four things that no existing platform combines for public data:
+Most of the plumbing (ingestion, storage, MCP serving) is standard, and Agent Fact Store uses standard tools for it. The value is in four things that no existing platform combines for public data:
 
 | | Capability | What it means |
 |---|---|---|
@@ -40,7 +40,7 @@ SOURCES ──► CONNECTORS ──► RAW STORE ──► CORE TEMPLATE ──�
                                           observations (+ provenance, license, versions)
 ```
 
-The core schema lives in [`src/factlayer/schema.sql`](src/factlayer/schema.sql):
+The core schema lives in [`src/agent_fact_store/schema.sql`](src/agent_fact_store/schema.sql):
 
 - **sources**: where data comes from, its license and attribution requirements
 - **entities**: the real-world things being described
@@ -58,7 +58,7 @@ python3 -m venv .venv
 ```
 
 ```python
-from factlayer import core
+from agent_fact_store import core
 
 con = core.connect("facts.duckdb")
 core.register_source(con, "cricsheet", "Cricsheet", "ODC-By-1.0", commercial_use=True,
@@ -88,4 +88,4 @@ core.get_facts(con, "player:kohli")
 
 ## Data and licensing
 
-factlayer is built on open data and licensed APIs, and does not scrape sites whose terms prohibit it. Every source's license is recorded, and every fact inherits it, so downstream users can filter for commercially usable data and give correct attribution.
+Agent Fact Store is built on open data and licensed APIs, and does not scrape sites whose terms prohibit it. Every source's license is recorded, and every fact inherits it, so downstream users can filter for commercially usable data and give correct attribution.

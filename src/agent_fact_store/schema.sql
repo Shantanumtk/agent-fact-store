@@ -1,4 +1,4 @@
--- factlayer universal core schema (v1)
+-- Agent Fact Store universal core schema (v1)
 -- Every field (sports, finance, health...) fits these same tables.
 -- Field-specific detail lives in metrics, entity types and the JSON columns.
 

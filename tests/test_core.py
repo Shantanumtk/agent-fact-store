@@ -1,6 +1,6 @@
 import pytest
 
-from factlayer import core
+from agent_fact_store import core
 
 
 @pytest.fixture
