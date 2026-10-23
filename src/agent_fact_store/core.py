@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -66,11 +67,36 @@ def resolve(con, scheme: str, identifier: str) -> str | None:
     return row[0] if row else None
 
 
-def start_run(con, source_id: str, pipeline: str, pipeline_version: str) -> int:
+def upsert_entities(con, rows: list[dict]) -> None:
+    """Bulk version of upsert_entity. Each row has the same keys as its arguments."""
+    con.executemany(
+        """INSERT INTO entities (entity_id, domain, entity_type, canonical_name, attributes)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (entity_id) DO UPDATE SET
+               canonical_name = excluded.canonical_name,
+               attributes = excluded.attributes""",
+        [[r["entity_id"], r["domain"], r["entity_type"], r["canonical_name"],
+          json.dumps(r.get("attributes") or {})] for r in rows],
+    )
+
+
+def add_identifiers(con, rows: list[dict]) -> None:
+    """Bulk version of add_identifier."""
+    con.executemany(
+        """INSERT OR REPLACE INTO entity_identifiers (entity_id, scheme, identifier, source_id)
+           VALUES (?, ?, ?, ?)""",
+        [[r["entity_id"], r["scheme"], r["identifier"], r.get("source_id")] for r in rows],
+    )
+
+
+def start_run(con, source_id: str, pipeline: str, pipeline_version: str, *,
+              source_url: str | None = None, raw_path: str | None = None,
+              raw_sha256: str | None = None) -> int:
     return con.execute(
-        """INSERT INTO ingestion_runs (source_id, pipeline, pipeline_version)
-           VALUES (?, ?, ?) RETURNING run_id""",
-        [source_id, pipeline, pipeline_version],
+        """INSERT INTO ingestion_runs
+             (source_id, pipeline, pipeline_version, source_url, raw_path, raw_sha256)
+           VALUES (?, ?, ?, ?, ?, ?) RETURNING run_id""",
+        [source_id, pipeline, pipeline_version, source_url, raw_path, raw_sha256],
     ).fetchone()[0]
 
 
@@ -121,6 +147,84 @@ def record_observation(con, entity_id: str, metric_id: str, value: float | None,
          value, value_text, unit, source_id, source_url,
          fetched_at or datetime.now(timezone.utc), run_id, license_[0]],
     ).fetchone()[0]
+
+
+_SAME_KEY = """o.superseded_at IS NULL AND o.source_id = $source_id
+    AND o.entity_id = s.entity_id AND o.metric_id = s.metric_id
+    AND o.period_label IS NOT DISTINCT FROM s.period_label
+    AND o.context::VARCHAR = s.context"""
+
+
+def record_observations(con, rows: list[dict], *, source_id: str, run_id: int | None = None,
+                        source_url: str | None = None,
+                        fetched_at: datetime | None = None) -> dict:
+    """Bulk version of record_observation, for pipelines writing thousands of facts.
+
+    Same rules: unchanged values are skipped, changed values supersede the old version.
+    Each row needs entity_id, metric_id and value (or value_text); period_label,
+    period_start, period_end, context and unit are optional. Keys must be unique.
+    Returns counts of inserted, superseded and unchanged facts."""
+    license_ = con.execute(
+        "SELECT license FROM sources WHERE source_id = ?", [source_id]
+    ).fetchone()
+    if license_ is None:
+        raise ValueError(f"Unknown source {source_id!r}; register it first")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "rows.ndjson"
+        with path.open("w") as f:
+            for r in rows:
+                f.write(json.dumps({
+                    "entity_id": r["entity_id"], "metric_id": r["metric_id"],
+                    "period_label": r.get("period_label"),
+                    "period_start": _iso(r.get("period_start")),
+                    "period_end": _iso(r.get("period_end")),
+                    "context": json.dumps(r.get("context") or {}, sort_keys=True),
+                    "value": r.get("value"), "value_text": r.get("value_text"),
+                    "unit": r.get("unit"),
+                }) + "\n")
+        con.execute(
+            """CREATE OR REPLACE TEMP TABLE _staging AS
+               SELECT * FROM read_json(?, format = 'newline_delimited', columns = {
+                   entity_id: 'VARCHAR', metric_id: 'VARCHAR', period_label: 'VARCHAR',
+                   period_start: 'DATE', period_end: 'DATE', context: 'VARCHAR',
+                   value: 'DOUBLE', value_text: 'VARCHAR', unit: 'VARCHAR'})""",
+            [str(path)],
+        )
+
+    params = {"source_id": source_id}
+    unchanged = con.execute(
+        f"""SELECT count(*) FROM _staging s WHERE EXISTS (
+              SELECT 1 FROM observations o WHERE {_SAME_KEY}
+                AND o.value IS NOT DISTINCT FROM s.value
+                AND o.value_text IS NOT DISTINCT FROM s.value_text)""", params,
+    ).fetchone()[0]
+    superseded = con.execute(
+        f"""UPDATE observations o SET superseded_at = current_timestamp
+            FROM _staging s
+            WHERE {_SAME_KEY}
+              AND (o.value IS DISTINCT FROM s.value OR o.value_text IS DISTINCT FROM s.value_text)
+            RETURNING o.obs_id""", params,
+    ).fetchall()
+    con.execute(
+        f"""INSERT INTO observations
+              (entity_id, metric_id, period_start, period_end, period_label, context,
+               value, value_text, unit, source_id, source_url, fetched_at, run_id, license)
+            SELECT s.entity_id, s.metric_id, s.period_start, s.period_end, s.period_label,
+                   s.context, s.value, s.value_text, s.unit, $source_id, $source_url,
+                   $fetched_at, $run_id, $license
+            FROM _staging s
+            WHERE NOT EXISTS (SELECT 1 FROM observations o WHERE {_SAME_KEY})""",
+        {**params, "source_url": source_url, "run_id": run_id, "license": license_[0],
+         "fetched_at": fetched_at or datetime.now(timezone.utc)},
+    )
+    con.execute("DROP TABLE _staging")
+    return {"inserted": len(rows) - unchanged, "superseded": len(superseded),
+            "unchanged": unchanged}
+
+
+def _iso(d: date | None) -> str | None:
+    return d.isoformat() if d else None
 
 
 def get_facts(con, entity_id: str, metric_id: str | None = None,

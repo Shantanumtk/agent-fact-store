@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     source_id        VARCHAR NOT NULL REFERENCES sources(source_id),
     pipeline         VARCHAR NOT NULL,
     pipeline_version VARCHAR NOT NULL,
+    source_url       VARCHAR,                      -- what was fetched
+    raw_path         VARCHAR,                      -- where the untouched copy is kept
+    raw_sha256       VARCHAR,                      -- fingerprint of that copy
     started_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
     finished_at      TIMESTAMP,
     status           VARCHAR NOT NULL DEFAULT 'running',  -- running | success | failed

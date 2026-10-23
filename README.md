@@ -73,13 +73,36 @@ core.get_facts(con, "player:kohli")
 # -> value 1322, with source, license, attribution, fetch time and run ID attached
 ```
 
+## Load real data: cricket
+
+The first domain pack loads [Cricsheet](https://cricsheet.org) ball-by-ball data and turns it into per-player, per-year batting and bowling facts:
+
+```bash
+.venv/bin/python -m agent_fact_store.packs.cricket.cricsheet --dataset tests --db data/facts.duckdb
+# run 1: 920 matches, 1223 players, 2001-2026
+# facts: 43357 inserted, 0 superseded, 0 unchanged
+```
+
+The downloaded archive is kept untouched in `data/raw/`, fingerprinted with SHA-256 and linked to every fact it produced. Re-running writes nothing if the data hasn't changed, and a corrected value supersedes the old one instead of overwriting it. `--dataset` also accepts `odis` and `t20is`.
+
+Spot checks against official records:
+
+| Player | Year | Loaded from Cricsheet |
+|---|---|---|
+| Virat Kohli | 2018 | 13 Tests, 1,322 runs, 24 dismissals |
+| Joe Root | 2021 | 15 Tests, 1,708 runs, 28 dismissals |
+| Pat Cummins | 2019 | 12 Tests, 59 wickets |
+| R Ashwin | 2016 | 12 Tests, 72 wickets |
+
+**Coverage caveat:** Cricsheet's Test coverage is close to complete from about 2006, partial for 2003–2005 and nearly empty before that. Comparisons with earlier eras will need another source.
+
 ## Roadmap
 
 | Module | Scope | Status |
 |---|---|---|
 | M1 | Universal core schema with provenance, licensing and versioning | ✅ Done |
-| M2 | Cricket connector (Cricsheet ball-by-ball data) | Next |
-| M3 | Entity registry: cross-source ID matching | Planned |
+| M2 | Cricket connector (Cricsheet ball-by-ball data) | ✅ Done |
+| M3 | Entity registry: cross-source ID matching | Next |
 | M4 | Adjustment engine v1: era-adjusted batting | Planned |
 | M5 | MCP server so agents can query facts | Planned |
 | M6 | Cross-source verification and confidence scores | Planned |
