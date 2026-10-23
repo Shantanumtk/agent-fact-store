@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS sources (
     homepage_url    VARCHAR,
     license         VARCHAR NOT NULL,             -- e.g. 'ODC-By-1.0'
     license_url     VARCHAR,
-    commercial_use  BOOLEAN NOT NULL,             -- can facts from here be used commercially?
+    commercial_use  BOOLEAN,                      -- can facts from here be used commercially?
+                                                  -- NULL for derived facts: depends on inputs
     attribution     VARCHAR                       -- required credit line, if any
 );
 
@@ -74,7 +75,8 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     started_at       TIMESTAMP NOT NULL DEFAULT current_timestamp,
     finished_at      TIMESTAMP,
     status           VARCHAR NOT NULL DEFAULT 'running',  -- running | success | failed
-    rows_written     BIGINT
+    rows_written     BIGINT,
+    params           JSON                          -- settings a derivation ran with
 );
 
 -- The facts. Every value carries its own provenance and license (novelty row 1),
@@ -102,7 +104,23 @@ CREATE TABLE IF NOT EXISTS observations (
     -- versioning
     recorded_at     TIMESTAMP NOT NULL DEFAULT current_timestamp,
     superseded_at   TIMESTAMP,                    -- NULL = current version
-    superseded_by_run BIGINT                      -- the run whose new value replaced this one
+    superseded_by_run BIGINT,                     -- the run whose new value replaced this one
+    -- derived facts only: fingerprint of the exact input facts, so a recomputation from
+    -- corrected inputs is a new version even when the result happens to be the same
+    inputs_hash     VARCHAR
+);
+
+-- Lineage for derived facts: which facts each one was computed from, and in what role.
+-- Following input_obs_id recursively reaches the raw facts and, through their runs,
+-- the original source files.
+-- No REFERENCES constraints here: DuckDB refuses to update rows that a foreign key points
+-- at, which would block marking an input as superseded. derive.py is the only writer and
+-- only links facts it has just read or written.
+CREATE TABLE IF NOT EXISTS fact_inputs (
+    obs_id          BIGINT NOT NULL,
+    input_obs_id    BIGINT NOT NULL,
+    role            VARCHAR NOT NULL,             -- 'numerator', 'value', 'reference', 'member'...
+    PRIMARY KEY (obs_id, input_obs_id, role)
 );
 
 -- Current facts only, which is what most queries want.

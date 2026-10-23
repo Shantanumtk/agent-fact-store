@@ -94,7 +94,7 @@ Spot checks against official records:
 | Pat Cummins | 2019 | 12 Tests, 59 wickets |
 | R Ashwin | 2016 | 12 Tests, 72 wickets |
 
-**Coverage caveat:** Cricsheet's Test coverage is close to complete from about 2006, partial for 2003–2005 and nearly empty before that. Comparisons with earlier eras will need another source.
+**Coverage caveat:** Cricsheet doesn't have every Test. Coverage is thin before about 2006 and still has gaps after it: Mohammad Yousuf's 2006, for example, shows 16 of his 19 innings. Comparisons with earlier eras will need another source, and coverage tracking is planned with verification (M6).
 
 ## Entity registry
 
@@ -121,6 +121,54 @@ Registry rules:
 - Attributes from different sources are merged, not overwritten.
 - Search ranks exact names, then whole words, then initials ("Mahendra Singh Dhoni" → "MS Dhoni"), then partial and fuzzy matches. Ties go to the entity with more facts.
 
+## Adjustment engine
+
+Making values from different contexts comparable is the same problem in every field: era-adjusted stats in sport, inflation-adjusted prices in economics, split-adjusted share prices, per-capita figures. The engine in [`derive.py`](src/agent_fact_store/derive.py) solves it once, with three operations that know nothing about any field:
+
+| Operation | What it does | Examples |
+|---|---|---|
+| `aggregate` | Sum or average a metric across entities or across periods | League totals, career totals, sector revenue |
+| `ratio` | Divide one metric by another for the same entity and period | Batting average, GDP per capita, profit margin |
+| `adjust` | `value / reference(period) × reference(base period)` | Era-adjusted runs, inflation-adjusted wages, split-adjusted prices |
+
+Domain packs only compose these into recipes. Two recipes ship today, in two unrelated fields:
+
+```bash
+.venv/bin/python -m agent_fact_store.packs.cricket.derived --db data/facts.duckdb
+# 22 derivation steps: 37670 inserted, 0 superseded, 0 unchanged
+
+.venv/bin/python -m agent_fact_store.packs.economy.fred --db data/facts.duckdb
+# minimum wage in 2025 dollars: 79 inserted, 0 unchanged, 8 skipped
+```
+
+**Cricket.** Batting and bowling averages, strike rates and economy rates, plus era-adjusted batting. A player's runs each year are rescaled by how that year's league batting average compares with the 2006–2025 average, so a run in a low-scoring year counts for more. Leaders over Cricsheet's coverage (men, 60+ innings):
+
+| Player | Average | Era-adjusted |
+|---|---|---|
+| KC Sangakkara | 61.07 | 57.41 |
+| HC Brook | 53.09 | 56.91 |
+| SPD Smith | 55.70 | 56.22 |
+| KS Williamson | 54.06 | 55.13 |
+| JH Kallis | 54.05 | 50.96 |
+
+The league baseline currently includes every batter, tail-enders too. A top-order baseline is a planned refinement.
+
+**Economy.** [FRED](https://fred.stlouisfed.org) supplies the US consumer price index, and the same `adjust` operation turns any USD metric in any field into constant dollars. The 1968 federal minimum wage ($1.58 annual average) was worth $14.62 in 2025 dollars, double today's $7.25.
+
+Every derived fact records:
+
+- the exact input facts it was computed from, and their role (numerator, reference, base...)
+- the operation, its parameters and the code version, through its run
+- a license combined from all its inputs, with commercial use allowed only if every original source allows it
+
+```python
+fact = core.get_facts(con, "cricket.player.ba607b88", "cricket.batting.average_era_adjusted")[0]
+core.lineage(con, fact["obs_id"])      # every step down to the raw Cricsheet facts
+core.raw_sources(con, fact["obs_id"])  # the original sources and their licenses
+```
+
+If an input is corrected, rerunning the recipe creates a new version of every affected derived fact, even when the result happens to be the same, because it was computed from different facts.
+
 ## Lineage
 
 Every value can be traced back to where it came from and through every change:
@@ -129,6 +177,7 @@ Every value can be traced back to where it came from and through every change:
 - **Code:** each run records the git commit that produced it (marked `-dirty` if there were uncommitted changes).
 - **Changes:** a corrected value never overwrites the old one. The old version is kept, marked with when it was replaced and by which run, so you can compare the two runs' source files and code to see why it changed.
 - **Mappings:** every ID and name in the registry records the run that first added it.
+- **Calculations:** every derived fact links to the facts it was computed from, so `core.lineage()` walks any number back to the raw files. See [Adjustment engine](#adjustment-engine).
 
 ## Known source issues
 
@@ -141,8 +190,8 @@ Every value can be traced back to where it came from and through every change:
 | M1 | Universal core schema with provenance, licensing and versioning | ✅ Done |
 | M2 | Cricket connector (Cricsheet ball-by-ball data) | ✅ Done |
 | M3 | Entity registry: cross-source ID matching, name search, change lineage | ✅ Done |
-| M4 | Adjustment engine v1: era-adjusted batting, with lineage for calculated facts | Next |
-| M5 | MCP server so agents can query facts | Planned |
+| M4 | Adjustment engine: generic aggregate, ratio and adjust, with lineage for derived facts; cricket and inflation recipes | ✅ Done |
+| M5 | MCP server so agents can query facts | Next |
 | M6 | Cross-source verification and confidence scores | Planned |
 | M7 | Second field (finance: SEC EDGAR + FRED) to prove the template generalizes | Planned |
 | M8 | Agent pipeline builder | Planned |
