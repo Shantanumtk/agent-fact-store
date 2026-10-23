@@ -27,15 +27,27 @@ CREATE TABLE IF NOT EXISTS entities (
 );
 
 -- ID crosswalk: one entity, many outside IDs (Cricsheet, ESPNcricinfo, ISIN, ticker...).
+-- An entity may hold several IDs in one scheme (duplicate profiles on the same site),
+-- but one outside ID never points at two entities.
 -- valid_from/valid_to handle IDs that change over time, like ticker renames.
 CREATE TABLE IF NOT EXISTS entity_identifiers (
     entity_id       VARCHAR NOT NULL REFERENCES entities(entity_id),
     scheme          VARCHAR NOT NULL,             -- 'cricsheet', 'cricinfo', 'isin', 'ticker'
     identifier      VARCHAR NOT NULL,
     source_id       VARCHAR REFERENCES sources(source_id),
+    run_id          BIGINT,                       -- run that first asserted this mapping
     valid_from      DATE,
     valid_to        DATE,
     PRIMARY KEY (scheme, identifier)
+);
+
+-- Every name an entity is known by, so agents can find "Virat Kohli" as well as "V Kohli".
+CREATE TABLE IF NOT EXISTS entity_names (
+    entity_id       VARCHAR NOT NULL REFERENCES entities(entity_id),
+    name            VARCHAR NOT NULL,
+    source_id       VARCHAR REFERENCES sources(source_id),
+    run_id          BIGINT,
+    PRIMARY KEY (entity_id, name)
 );
 
 -- The metric catalog: every metric defined once.
@@ -55,6 +67,7 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     source_id        VARCHAR NOT NULL REFERENCES sources(source_id),
     pipeline         VARCHAR NOT NULL,
     pipeline_version VARCHAR NOT NULL,
+    code_version     VARCHAR,                      -- git commit of the code that ran
     source_url       VARCHAR,                      -- what was fetched
     raw_path         VARCHAR,                      -- where the untouched copy is kept
     raw_sha256       VARCHAR,                      -- fingerprint of that copy
@@ -88,7 +101,8 @@ CREATE TABLE IF NOT EXISTS observations (
     confidence      DOUBLE,                       -- 0..1, filled in by the verification engine
     -- versioning
     recorded_at     TIMESTAMP NOT NULL DEFAULT current_timestamp,
-    superseded_at   TIMESTAMP                     -- NULL = current version
+    superseded_at   TIMESTAMP,                    -- NULL = current version
+    superseded_by_run BIGINT                      -- the run whose new value replaced this one
 );
 
 -- Current facts only, which is what most queries want.

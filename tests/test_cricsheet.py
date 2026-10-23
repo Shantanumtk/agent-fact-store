@@ -126,3 +126,6 @@ def test_source_correction_supersedes_old_value(con, tmp_path):
     history = core.get_facts(con, cricsheet.entity_id("id-atwo"), "cricket.batting.runs",
                              include_history=True)
     assert [f["value"] for f in history] == [10, 8]
+    # lineage: the old value points at the run that replaced it, the new one comes from it
+    assert history[0]["superseded_by_run"] == result["run_id"] == history[1]["run_id"]
+    assert history[1]["superseded_by_run"] is None

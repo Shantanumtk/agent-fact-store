@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from agent_fact_store import core
@@ -95,3 +97,72 @@ def test_ingestion_run_links_to_facts(con):
     assert core.get_facts(con, "player:kohli")[0]["run_id"] == run
     status = con.execute("SELECT status, rows_written FROM ingestion_runs").fetchone()
     assert status == ("success", 1)
+
+
+def test_conflicting_identifier_is_rejected_and_nothing_written(con):
+    core.upsert_entity(con, "player:kohli", "cricket", "player", "Virat Kohli")
+    core.upsert_entity(con, "player:other", "cricket", "player", "Someone Else")
+    core.add_identifier(con, "player:kohli", "cricinfo", "253802")
+    with pytest.raises(core.IdentifierConflict):
+        core.add_identifiers(con, [
+            {"entity_id": "player:other", "scheme": "cricbuzz", "identifier": "1413"},
+            {"entity_id": "player:other", "scheme": "cricinfo", "identifier": "253802"},
+        ])
+    assert core.resolve(con, "cricinfo", "253802") == "player:kohli"
+    assert core.resolve(con, "cricbuzz", "1413") is None  # whole batch rejected
+
+
+def test_one_id_claimed_by_two_entities_in_one_batch_is_rejected(con):
+    for eid in ("a", "b"):
+        core.upsert_entity(con, eid, "cricket", "person", eid)
+    with pytest.raises(core.IdentifierConflict):
+        core.add_identifiers(con, [{"entity_id": e, "scheme": "cricinfo", "identifier": "1"}
+                                   for e in ("a", "b")])
+
+
+def test_entity_can_hold_several_ids_in_one_scheme(con):
+    core.upsert_entity(con, "p", "cricket", "person", "P")
+    core.add_identifiers(con, [{"entity_id": "p", "scheme": "cricinfo", "identifier": i}
+                               for i in ("1", "2")])
+    assert core.identifiers(con, "p") == {"cricinfo": ["1", "2"]}
+
+
+def test_attributes_from_two_sources_are_merged(con):
+    core.upsert_entity(con, "p", "cricket", "person", "P", {"gender": "male"})
+    core.upsert_entity(con, "p", "cricket", "person", "P", {"born": "1988-11-05"})
+    attrs = con.execute("SELECT attributes FROM entities WHERE entity_id = 'p'").fetchone()[0]
+    assert json.loads(attrs) == {"gender": "male", "born": "1988-11-05"}
+
+
+def test_find_entities_by_any_name(con):
+    core.upsert_entity(con, "player:kohli", "cricket", "person", "V Kohli")
+    core.upsert_entity(con, "player:root", "cricket", "person", "JE Root")
+    core.add_names(con, [{"entity_id": "player:kohli", "name": n}
+                         for n in ("V Kohli", "Virat Kohli")])
+    core.add_names(con, [{"entity_id": "player:root", "name": "JE Root"}])
+    assert core.find_entities(con, "virat kohli")[0]["entity_id"] == "player:kohli"
+    assert core.find_entities(con, "Kohli")[0]["entity_id"] == "player:kohli"
+    assert core.find_entities(con, "Virat Kholi")[0]["entity_id"] == "player:kohli"  # typo
+    assert core.find_entities(con, "Kohli", domain="finance") == []
+
+
+def test_runs_record_code_version(con):
+    run = core.start_run(con, "cricsheet", "p", "0.1.0")
+    version = con.execute("SELECT code_version FROM ingestion_runs WHERE run_id = ?",
+                          [run]).fetchone()[0]
+    assert version and version != ""
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("Mithali Raj", "M Raj"),
+    ("Mahendra Singh Dhoni", "MS Dhoni"),
+    ("Quinton de Kock", "Q de Kock"),
+    ("Steve Smith", "SPD Smith"),
+])
+def test_find_entities_matches_full_names_to_initials(con, query, expected):
+    for name in ("M Raj", "MS Dhoni", "Q de Kock", "SPD Smith", "MS Rajput"):
+        core.upsert_entity(con, name, "cricket", "person", name)
+        core.add_names(con, [{"entity_id": name, "name": name}])
+    found = core.find_entities(con, query)
+    assert found[0]["canonical_name"] == expected
+    assert found[0]["match"] == "initials"

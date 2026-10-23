@@ -213,15 +213,19 @@ def load(con, zip_path: Path, *, source_url: str, raw_sha256: str | None = None)
     try:
         agg = aggregate(zip_path)
         core.upsert_entities(con, [
-            {"entity_id": entity_id(pid), "domain": "cricket", "entity_type": "player",
+            {"entity_id": entity_id(pid), "domain": "cricket", "entity_type": "person",
              "canonical_name": name, "attributes": {"gender": agg.genders[pid]}}
             for pid, name in agg.names.items()
-        ])
+        ], update_names=False)  # the people register owns canonical names
         core.add_identifiers(con, [
             {"entity_id": entity_id(pid), "scheme": "cricsheet", "identifier": pid,
              "source_id": SOURCE_ID}
             for pid in agg.names
-        ])
+        ], run_id=run_id)
+        core.add_names(con, [
+            {"entity_id": entity_id(pid), "name": name, "source_id": SOURCE_ID}
+            for pid, name in agg.names.items()
+        ], run_id=run_id)
         counts = core.record_observations(con, to_observations(agg), source_id=SOURCE_ID,
                                           run_id=run_id, source_url=source_url)
     except Exception:

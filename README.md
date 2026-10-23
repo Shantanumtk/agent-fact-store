@@ -96,14 +96,52 @@ Spot checks against official records:
 
 **Coverage caveat:** Cricsheet's Test coverage is close to complete from about 2006, partial for 2003–2005 and nearly empty before that. Comparisons with earlier eras will need another source.
 
+## Entity registry
+
+Load the people register first and every cricket person gets a full ID crosswalk, including people with no match data yet:
+
+```bash
+.venv/bin/python -m agent_fact_store.packs.cricket.register --db data/facts.duckdb
+# run 1: 18651 people, 47207 outside IDs (47207 new), 26550 new names
+```
+
+```python
+core.resolve(con, "cricinfo", "253802")          # -> 'cricket.player.ba607b88'
+core.identifiers(con, "cricket.player.ba607b88")
+# {'cricinfo': ['253802'], 'cricketarchive': ['101095'], 'cricsheet': ['ba607b88'], 'pulse': ['164']}
+
+core.find_entities(con, "Mithali Raj")           # -> M Raj (matched by initials)
+core.find_entities(con, "Virat Kholi")           # -> V Kohli (close spelling)
+```
+
+Registry rules:
+
+- One outside ID never points at two entities. A batch that would cause that is rejected whole, with the conflicts listed.
+- One entity may hold several IDs on the same site, since sites have duplicate profiles.
+- Attributes from different sources are merged, not overwritten.
+- Search ranks exact names, then whole words, then initials ("Mahendra Singh Dhoni" → "MS Dhoni"), then partial and fuzzy matches. Ties go to the entity with more facts.
+
+## Lineage
+
+Every value can be traced back to where it came from and through every change:
+
+- **Origin:** each fact links to its ingestion run, which records the source URL, the untouched raw file kept in `data/raw/` and its SHA-256 fingerprint.
+- **Code:** each run records the git commit that produced it (marked `-dirty` if there were uncommitted changes).
+- **Changes:** a corrected value never overwrites the old one. The old version is kept, marked with when it was replaced and by which run, so you can compare the two runs' source files and code to see why it changed.
+- **Mappings:** every ID and name in the registry records the run that first added it.
+
+## Known source issues
+
+- Cricsheet's `names.csv` lists "Anderson Cummins" as an alias of Pat Cummins (`ded9240e`), although Anderson Cummins is a separate player (`ad75edc3`). The alias is kept as published, with its provenance. Cross-source verification (M6) is meant to catch this kind of error.
+
 ## Roadmap
 
 | Module | Scope | Status |
 |---|---|---|
 | M1 | Universal core schema with provenance, licensing and versioning | ✅ Done |
 | M2 | Cricket connector (Cricsheet ball-by-ball data) | ✅ Done |
-| M3 | Entity registry: cross-source ID matching | Next |
-| M4 | Adjustment engine v1: era-adjusted batting | Planned |
+| M3 | Entity registry: cross-source ID matching, name search, change lineage | ✅ Done |
+| M4 | Adjustment engine v1: era-adjusted batting, with lineage for calculated facts | Next |
 | M5 | MCP server so agents can query facts | Planned |
 | M6 | Cross-source verification and confidence scores | Planned |
 | M7 | Second field (finance: SEC EDGAR + FRED) to prove the template generalizes | Planned |
