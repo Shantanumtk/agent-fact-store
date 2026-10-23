@@ -169,6 +169,36 @@ core.raw_sources(con, fact["obs_id"])  # the original sources and their licenses
 
 If an input is corrected, rerunning the recipe creates a new version of every affected derived fact, even when the result happens to be the same, because it was computed from different facts.
 
+## MCP server: facts for AI agents
+
+[`mcp_server.py`](src/agent_fact_store/mcp_server.py) gives any MCP client (Claude Code, Claude Desktop and others) read-only access to the store. Its 12 tools work for every field: they know the template, not any domain, so a new domain pack needs no new tools. A test fails if a tool's name, description or parameters mention a field.
+
+| Purpose | Tools |
+|---|---|
+| Discover | `list_domains`, `search_entities`, `get_entity` (with coverage), `list_metrics`, `describe_metric` (contexts, periods, how it's derived, what's derived from it) |
+| Query | `get_facts` (period, date and context filters, point-in-time `as_of`, history, concise or detailed), `compare`, `rank` (with minimum-sample filters) |
+| Trust | `explain_fact` (lineage down to raw files), `get_fact_history`, `list_sources` (licenses, attribution, freshness) |
+| Escape hatch | `run_sql`: one read-only SELECT, no file or network access, row cap, 10-second limit |
+
+Every value comes back with its source, license, whether commercial use is allowed, and a `fact_id` that `explain_fact` traces to the raw files.
+
+Add it to Claude Code:
+
+```bash
+claude mcp add agent-fact-store -- /path/to/agent-fact-store/.venv/bin/agent-fact-store-mcp \
+  --db /path/to/agent-fact-store/data/facts.duckdb
+```
+
+Example answers from the real store:
+
+| Question | Tool | Answer |
+|---|---|---|
+| Kohli, Smith, Root over all covered Tests | `compare` | Kohli 9,230 runs at 46.85 (era-adjusted 47.98); Smith 55.70 (56.22); Root 50.45 (52.67) |
+| Best era-adjusted Test averages of 2018, min 15 innings | `rank` | Kohli 64.5, AD Mathews 57.6, BKG Mendis 54.4 |
+| The 1968 US minimum wage in 2025 dollars | `get_facts` | $1.58 then, $14.62 in 2025 dollars, public domain |
+
+The server opens the store read-only. Stop it before running pipelines, which need write access.
+
 ## Lineage
 
 Every value can be traced back to where it came from and through every change:
@@ -191,8 +221,8 @@ Every value can be traced back to where it came from and through every change:
 | M2 | Cricket connector (Cricsheet ball-by-ball data) | ✅ Done |
 | M3 | Entity registry: cross-source ID matching, name search, change lineage | ✅ Done |
 | M4 | Adjustment engine: generic aggregate, ratio and adjust, with lineage for derived facts; cricket and inflation recipes | ✅ Done |
-| M5 | MCP server so agents can query facts | Next |
-| M6 | Cross-source verification and confidence scores | Planned |
+| M5 | MCP server: 12 field-agnostic, read-only tools for agents | ✅ Done |
+| M6 | Cross-source verification, confidence scores and coverage tracking | Next |
 | M7 | Second field (finance: SEC EDGAR + FRED) to prove the template generalizes | Planned |
 | M8 | Agent pipeline builder | Planned |
 

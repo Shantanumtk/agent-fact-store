@@ -136,7 +136,7 @@ def identifiers(con, entity_id: str) -> dict[str, list[str]]:
 
 
 def find_entities(con, query: str, domain: str | None = None, limit: int = 10,
-                  min_score: float = 0.85) -> list[dict]:
+                  min_score: float = 0.85, entity_type: str | None = None) -> list[dict]:
     """Find entities by any of their names, best first: exact name, then the query as whole
     words inside a name ("Anderson" in "James Anderson"), then a full name matching an
     initials form ("Mithali Raj" -> "M Raj", "Mahendra Singh Dhoni" -> "MS Dhoni"), then
@@ -173,13 +173,14 @@ def find_entities(con, query: str, domain: str | None = None, limit: int = 10,
                (SELECT count(*) FROM current_observations o
                 WHERE o.entity_id = e.entity_id) AS fact_count
         FROM matches m JOIN entities e USING (entity_id)
-        WHERE $domain IS NULL OR e.domain = $domain
+        WHERE ($domain IS NULL OR e.domain = $domain)
+          AND ($entity_type IS NULL OR e.entity_type = $entity_type)
         ORDER BY m.tier DESC,
                  CASE WHEN m.tier = 1 THEN m.similarity END DESC NULLS LAST,
                  fact_count DESC, m.similarity DESC, e.canonical_name
         LIMIT $limit"""
-    cur = con.execute(sql, {"q": query, "domain": domain, "limit": limit,
-                            "min_score": min_score, **initials})
+    cur = con.execute(sql, {"q": query, "domain": domain, "entity_type": entity_type,
+                            "limit": limit, "min_score": min_score, **initials})
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
