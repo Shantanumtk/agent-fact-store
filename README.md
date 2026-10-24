@@ -171,16 +171,16 @@ If an input is corrected, rerunning the recipe creates a new version of every af
 
 ## MCP server: facts for AI agents
 
-[`mcp_server.py`](src/agent_fact_store/mcp_server.py) gives any MCP client (Claude Code, Claude Desktop and others) read-only access to the store. Its 12 tools work for every field: they know the template, not any domain, so a new domain pack needs no new tools. A test fails if a tool's name, description or parameters mention a field.
+[`mcp_server.py`](src/agent_fact_store/mcp_server.py) gives any MCP client (Claude Code, Claude Desktop and others) read-only access to the store. Its 14 tools work for every field: they know the template, not any domain, so a new domain pack needs no new tools. A test fails if a tool's name, description or parameters mention a field.
 
 | Purpose | Tools |
 |---|---|
 | Discover | `list_domains`, `search_entities`, `get_entity` (with coverage), `list_metrics`, `describe_metric` (contexts, periods, how it's derived, what's derived from it) |
 | Query | `get_facts` (period, date and context filters, point-in-time `as_of`, history, concise or detailed), `compare`, `rank` (with minimum-sample filters) |
-| Trust | `explain_fact` (lineage down to raw files), `get_fact_history`, `list_sources` (licenses, attribution, freshness) |
+| Trust | `explain_fact` (lineage down to raw files, plus checks against other sources), `get_fact_history`, `list_sources` (licenses, attribution, freshness), `get_coverage` (what's missing), `list_issues` (known errors and conflicts) |
 | Escape hatch | `run_sql`: one read-only SELECT, no file or network access, row cap, 10-second limit |
 
-Every value comes back with its source, license, whether commercial use is allowed, and a `fact_id` that `explain_fact` traces to the raw files.
+Every value comes back with its source, license, whether commercial use is allowed, a confidence score and check status, and a `fact_id` that `explain_fact` traces to the raw files. Results also carry coverage notes when the data behind them is incomplete.
 
 Add it to Claude Code:
 
@@ -199,6 +199,50 @@ Example answers from the real store:
 
 The server opens the store read-only. Stop it before running pipelines, which need write access.
 
+## Verification, confidence and coverage
+
+[`verify.py`](src/agent_fact_store/verify.py) records evidence about facts without deciding what is true. Like the adjustment engine, it knows nothing about any field.
+
+**Checks against other sources.** `verify.compare` compares the store's facts with another source's. Each pair is kept with one of three outcomes, and neither value is ever overwritten:
+
+- `agree`: within tolerance
+- `sample_differs`: the two sources count a different number of underlying events (matches, filings...), so the values aren't comparable. The likely cause is recorded: a coverage gap on our side, or an out-of-date reference
+- `conflict`: same sample, different value. Registered as an issue
+
+**Independence.** Every source records its upstream, the source it copies from. Wikipedia's cricket infoboxes mostly cite ESPNcricinfo, so Wikipedia is registered with that upstream. Agreement only counts between sources that share no upstream.
+
+**Confidence** means "independent sources agree", never "this is true":
+
+| Status | Confidence | When |
+|---|---|---|
+| `unchecked` | 0.5 | No check, or only against dependent sources |
+| `corroborated` | 1 − 0.5^(k+1) | k independent sources agree (0.75 for one, 0.875 for two) |
+| `not_comparable` | 0.5 | The sources count different samples |
+| `disputed` | 0.25 | An independent source conflicts |
+
+**Coverage.** Cricsheet records each match's official number, which is sequential, so missing numbers are missing matches. For men's Tests the store holds 896 of the 2,637 played: none of #1–#1577, and 164 gaps after that. Results carry these gaps as coverage notes.
+
+**Issues register.** Known errors, gaps, conflicts and ambiguous identities, each with evidence and a triage status (open, reported, resolved, wontfix).
+
+The second cricket source is Wikipedia's player infoboxes, matched to our players through Wikidata's ESPNcricinfo IDs (never by name). Each fact links to the exact article revision:
+
+```bash
+.venv/bin/python -m agent_fact_store.packs.cricket.wikipedia --db data/facts.duckdb
+# run 29: 10031 players mapped, 1168 infoboxes loaded, 52 without Test stats, 2 ID conflicts
+#   cricket.batting.runs: 639 agree, 501 sample differs, 18 conflict
+```
+
+What it found on real data:
+
+| Player | Store (Cricsheet) | Wikipedia | Status |
+|---|---|---|---|
+| Virat Kohli | 123 Tests, 9,230 runs | 123 Tests, 9,230 runs | corroborated, 0.75 |
+| Sachin Tendulkar | 82 Tests, 6,416 runs | 200 Tests, 15,921 runs | not comparable: Cricsheet starts in 2001 |
+| Mithali Raj | 4 Tests | 12 Tests | not comparable: 129 women's Tests missing |
+| Nazmul Hossain Shanto | 43 Tests, 2,424 runs | 43 Tests, 2,663 runs | disputed, 0.25 |
+
+Settling disputes like these needs a third independent source. ESPNcricinfo would be the natural one, but its terms don't allow scraping.
+
 ## Lineage
 
 Every value can be traced back to where it came from and through every change:
@@ -211,7 +255,11 @@ Every value can be traced back to where it came from and through every change:
 
 ## Known source issues
 
-- Cricsheet's `names.csv` lists "Anderson Cummins" as an alias of Pat Cummins (`ded9240e`), although Anderson Cummins is a separate player (`ad75edc3`). The alias is kept as published, with its provenance. Cross-source verification (M6) is meant to catch this kind of error.
+These are also in the issues register (`list_issues`), with evidence.
+
+- Cricsheet's `names.csv` lists "Anderson Cummins" as an alias of Pat Cummins (`ded9240e`), although Anderson Cummins is a separate player (`ad75edc3`). The alias is kept as published, with its provenance.
+- Cricsheet's register has two entries for Margaret Ngoche (`a5ff11c2` and `f91abcd6`), which Wikidata maps to one person. The Wikidata IDs are left unlinked until this is resolved.
+- Wikipedia infoboxes contain errors. Usman Salahuddin's lists 1 Test, 37 runs and an average of 27.29, which is impossible with at most two innings. 119 batting averages conflict with Cricsheet even where matches and runs agree, so these are kept as disputed rather than trusted either way.
 
 ## Roadmap
 
@@ -222,7 +270,7 @@ Every value can be traced back to where it came from and through every change:
 | M3 | Entity registry: cross-source ID matching, name search, change lineage | ✅ Done |
 | M4 | Adjustment engine: generic aggregate, ratio and adjust, with lineage for derived facts; cricket and inflation recipes | ✅ Done |
 | M5 | MCP server: 12 field-agnostic, read-only tools for agents | ✅ Done |
-| M6 | Cross-source verification, confidence scores and coverage tracking | Next |
+| M6 | Cross-source verification, confidence scores, coverage tracking and an issues register; Wikipedia as a second cricket source | ✅ Done |
 | M7 | Second field (finance: SEC EDGAR + FRED) to prove the template generalizes | Planned |
 | M8 | Agent pipeline builder | Planned |
 

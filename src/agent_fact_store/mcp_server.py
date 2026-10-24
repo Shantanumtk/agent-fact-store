@@ -29,7 +29,13 @@ Typical workflow:
 2. Query: get_facts for values (including point-in-time with as_of), compare for several
    entities side by side, rank for leaderboards with minimum-sample filters.
 3. Explain: every value has a fact_id. explain_fact shows how a value was computed,
-   down to the raw source files; get_fact_history shows every version of a value.
+   down to the raw source files, and how it fared against other sources;
+   get_fact_history shows every version of a value.
+4. Know the limits: each fact has a confidence and check_status. Confidence means
+   "independent sources agree", not "true": 0.5 unchecked, 0.75 one independent source
+   agrees, 0.875 two, 0.25 disputed. get_coverage shows what datasets are missing and
+   list_issues shows known errors and conflicts. coverage_notes in results flag gaps
+   that affect the facts returned.
 
 When you present numbers, cite their source (list_sources gives attribution text) and
 mention coverage limits that get_entity or describe_metric reveal. If commercial_use is
@@ -202,6 +208,32 @@ def build_server(db_path: str) -> MCPServer:
         """The sources behind the store: license, whether commercial use is allowed, the
         attribution to cite, how many facts each supplies and when each was last fetched."""
         return call(api.list_sources)
+
+    @tool()
+    def get_coverage(
+        domain: Annotated[str | None, Field(description="Limit to one domain")] = None,
+        dataset: Annotated[str | None, Field(description="Limit to one dataset")] = None,
+        period: Annotated[str | None, Field(description="Period label, or 'all' for "
+                                                        "whole-dataset totals")] = None,
+        only_gaps: Annotated[bool, Field(description="Only periods with missing items")] = False,
+        limit: Limit = 100, offset: Offset = 0,
+    ) -> dict[str, Any]:
+        """What each dataset should contain versus what the store holds, per period, with
+        the missing items listed where they are known and how 'expected' was worked out.
+        Use it before concluding that something didn't happen."""
+        return call(api.get_coverage, domain, dataset, period, only_gaps, limit, offset)
+
+    @tool()
+    def list_issues(
+        status: Annotated[str | None, Field(description="open, reported, resolved or wontfix")] = None,
+        kind: Annotated[str | None, Field(description="error, gap, conflict or ambiguity")] = None,
+        domain: Annotated[str | None, Field(description="Limit to one domain")] = None,
+        entity_id: Annotated[str | None, Field(description="Limit to one entity")] = None,
+        limit: Limit = 50, offset: Offset = 0,
+    ) -> dict[str, Any]:
+        """Known problems: errors found in sources, conflicts between sources, and
+        ambiguous identities, each with evidence and a triage status."""
+        return call(api.list_issues, status, kind, domain, entity_id, limit, offset)
 
     @tool()
     def run_sql(

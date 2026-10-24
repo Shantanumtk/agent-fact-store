@@ -16,7 +16,7 @@ from pathlib import Path
 
 import duckdb
 
-from agent_fact_store import core
+from agent_fact_store import core, verify
 
 MAX_LIMIT = 500
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -178,6 +178,7 @@ def get_facts(con, entity_ids: list[str], metric_ids: list[str] | None = None,
                       order="o.entity_id, o.metric_id, o.period_start NULLS LAST, o.period_label, "
                             "o.recorded_at")
     result = _page(rows, limit, offset)
+    result["coverage_notes"] = _coverage_notes(con, result["rows"])
     if not rows and offset == 0:
         result["hint"] = ("No facts matched. get_entity shows which metrics, contexts and "
                           "periods exist for an entity.")
@@ -289,8 +290,20 @@ def explain_fact(con, fact_id: int, max_depth: int = 2, max_nodes: int = 100) ->
         n["params"] = json.loads(n["params"]) if n["params"] else None
         out.append(n)
     sources = core.raw_sources(con, fact_id)
+    checks = _rows(con, """
+        SELECT c.check_id, c.status, c.independent, c.subject_value, c.reference_value,
+               c.difference, o.source_id AS reference_source, o.source_url AS reference_url,
+               c.detail, c.recorded_at
+        FROM checks c JOIN observations o ON o.obs_id = c.reference_obs_id
+        WHERE c.subject_obs_id = ? ORDER BY c.check_id DESC""", [fact_id])
+    for c in checks:
+        c["detail"] = json.loads(c["detail"] or "{}")
     return {
         "fact": out[0], "inputs": out[1:], "nodes_total": total,
+        **verify.assess(con, [fact_id])[fact_id], "checks": checks,
+        "coverage_notes": _coverage_notes(con, [{"entity_id": out[0]["entity_id"],
+                                                  "context": out[0]["context"],
+                                                  "period_label": out[0]["period_label"]}]),
         "nodes_shown": len(out), "deeper_nodes_hidden": hidden_deeper,
         "raw_sources": sources,
         "commercial_use": all(s["commercial_use"] for s in sources),
@@ -330,6 +343,48 @@ def list_sources(con) -> list[dict]:
         FROM sources s ORDER BY s.source_id""")
 
 
+def get_coverage(con, domain: str | None = None, dataset: str | None = None,
+                 period: str | None = None, only_gaps: bool = False,
+                 limit: int = 100, offset: int = 0) -> dict:
+    where, params = ["TRUE"], []
+    for column, value in (("domain", domain), ("dataset", dataset), ("period_label", period)):
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    if only_gaps:
+        where.append("(expected IS NULL OR expected > present)")
+    limit = _limit(limit)
+    rows = _rows(con, f"""
+        SELECT source_id, domain, dataset, scope, period_label, expected, present,
+               expected - present AS missing_count, missing, method, recorded_at
+        FROM current_coverage WHERE {' AND '.join(where)}
+        ORDER BY domain, dataset, period_label = 'all' DESC, period_label
+        LIMIT ? OFFSET ?""", params + [limit + 1, offset])
+    for r in rows:
+        r["scope"], r["missing"] = json.loads(r["scope"]), json.loads(r["missing"] or "[]")
+    return _page(rows, limit, offset)
+
+
+def list_issues(con, status: str | None = None, kind: str | None = None,
+                domain: str | None = None, entity_id: str | None = None,
+                limit: int = 50, offset: int = 0) -> dict:
+    where, params = ["TRUE"], []
+    for column, value in (("status", status), ("kind", kind), ("domain", domain),
+                          ("entity_id", entity_id)):
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    limit = _limit(limit)
+    rows = _rows(con, f"""
+        SELECT issue_id, kind, status, source_id, domain, entity_id, metric_id, period_label,
+               summary, evidence, created_at, updated_at
+        FROM issues WHERE {' AND '.join(where)}
+        ORDER BY updated_at DESC, issue_id LIMIT ? OFFSET ?""", params + [limit + 1, offset])
+    for r in rows:
+        r["evidence"] = json.loads(r["evidence"] or "{}")
+    return _page(rows, limit, offset)
+
+
 # ---------------------------------------------------------------- escape hatch
 
 SQL_TABLES = (
@@ -340,7 +395,11 @@ SQL_TABLES = (
     "period_start, period_end, context JSON, value, unit, source_id, license, run_id, "
     "recorded_at, superseded_at, inputs_hash); fact_inputs(obs_id, input_obs_id, role); "
     "sources(source_id, name, license, commercial_use, attribution); "
-    "ingestion_runs(run_id, source_id, pipeline, code_version, raw_sha256, params)")
+    "ingestion_runs(run_id, source_id, pipeline, code_version, raw_sha256, params); "
+    "checks(check_id, entity_id, metric_id, subject_obs_id, reference_obs_id, status, "
+    "independent, detail JSON); coverage / current_coverage(source_id, domain, dataset, "
+    "scope JSON, period_label, expected, present, missing JSON); issues(issue_id, kind, "
+    "status, source_id, entity_id, metric_id, period_label, summary, evidence JSON)")
 
 
 def run_sql(con, sql: str, limit: int = 200, timeout_seconds: float = 10.0) -> dict:
@@ -390,14 +449,38 @@ def _fact_rows(con, where: str, params: list, detail: str, limit: int, offset: i
         SELECT {_FACT_COLUMNS[detail]}
         FROM observations o JOIN entities e USING (entity_id) JOIN sources s USING (source_id)
         WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?""", params + [limit, offset])
+    assessed = verify.assess(con, [r["fact_id"] for r in rows])
     for r in rows:
         r["context"] = json.loads(r["context"])
+        r.update({k: assessed[r["fact_id"]][k] for k in ("confidence", "check_status")})
         if r["derived"]:
             sources = core.raw_sources(con, r["fact_id"])
             r["commercial_use"] = all(s["commercial_use"] for s in sources)
             if detail == "detailed":
                 r["attribution"] = "; ".join(s["attribution"] for s in sources if s["attribution"])
     return rows
+
+
+def _coverage_notes(con, facts: list[dict]) -> list[dict]:
+    """Coverage gaps that apply to these facts, so answers can say what is missing."""
+    attrs: dict[str, tuple] = {}
+    notes, seen = [], set()
+    for f in facts:
+        if f["entity_id"] not in attrs:
+            row = con.execute("SELECT domain, attributes FROM entities WHERE entity_id = ?",
+                              [f["entity_id"]]).fetchone()
+            attrs[f["entity_id"]] = (row[0], json.loads(row[1] or "{}")) if row else (None, {})
+        domain, attributes = attrs[f["entity_id"]]
+        for c in verify.coverage_for(con, domain, f["context"], attributes, f["period_label"]):
+            key = (c["dataset"], c["period_label"])
+            if key in seen or not c["missing_count"]:
+                continue
+            seen.add(key)
+            notes.append({"dataset": c["dataset"], "period_label": c["period_label"],
+                          "expected": c["expected"], "present": c["present"],
+                          "missing_count": c["missing_count"],
+                          "missing_sample": c["missing"][:5]})
+    return notes
 
 
 def _period_filters(where: list, params: list, periods, start, end) -> None:

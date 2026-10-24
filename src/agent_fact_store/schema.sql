@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS sources (
     license_url     VARCHAR,
     commercial_use  BOOLEAN,                      -- can facts from here be used commercially?
                                                   -- NULL for derived facts: depends on inputs
-    attribution     VARCHAR                       -- required credit line, if any
+    attribution     VARCHAR,                      -- required credit line, if any
+    upstream        VARCHAR                       -- where this source gets its data, if it
+                                                  -- copies another (e.g. 'espncricinfo').
+                                                  -- Sources sharing an upstream are not
+                                                  -- independent of each other.
 );
 
 -- Real-world things: a player, a team, a company, a film, a country.
@@ -126,3 +130,65 @@ CREATE TABLE IF NOT EXISTS fact_inputs (
 -- Current facts only, which is what most queries want.
 CREATE OR REPLACE VIEW current_observations AS
 SELECT * FROM observations WHERE superseded_at IS NULL;
+
+CREATE SEQUENCE IF NOT EXISTS check_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS issue_seq START 1;
+
+-- Coverage: what a dataset should contain versus what the store holds, per period.
+-- scope says which facts it applies to: {"context": {...}, "attributes": {...}}.
+-- Every run writes a fresh assessment; current_coverage keeps the latest per key.
+CREATE TABLE IF NOT EXISTS coverage (
+    source_id       VARCHAR NOT NULL,
+    domain          VARCHAR NOT NULL,
+    dataset         VARCHAR NOT NULL,             -- human label, e.g. "Men's Test matches"
+    scope           JSON NOT NULL,
+    period_label    VARCHAR NOT NULL,             -- a period, or 'all' for the whole dataset
+    expected        BIGINT,                       -- NULL when unknown
+    present         BIGINT NOT NULL,
+    missing         JSON,                         -- the missing items, where they are known
+    method          VARCHAR NOT NULL,             -- how 'expected' was determined
+    run_id          BIGINT NOT NULL,
+    recorded_at     TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+CREATE OR REPLACE VIEW current_coverage AS
+SELECT * EXCLUDE (rn) FROM (
+    SELECT *, row_number() OVER (PARTITION BY source_id, dataset, period_label
+                                 ORDER BY run_id DESC) AS rn
+    FROM coverage) WHERE rn = 1;
+
+-- Verification: one row per comparison of a fact with another source's fact.
+-- Both values are kept whatever the outcome; nothing is overwritten or picked silently.
+CREATE TABLE IF NOT EXISTS checks (
+    check_id        BIGINT PRIMARY KEY DEFAULT nextval('check_seq'),
+    run_id          BIGINT NOT NULL,
+    entity_id       VARCHAR NOT NULL,
+    metric_id       VARCHAR NOT NULL,
+    subject_obs_id  BIGINT NOT NULL,              -- the fact being checked
+    reference_obs_id BIGINT NOT NULL,             -- the other source's fact
+    subject_value   DOUBLE,
+    reference_value DOUBLE,
+    difference      DOUBLE,                       -- subject - reference
+    status          VARCHAR NOT NULL,             -- agree | sample_differs | conflict
+    independent     BOOLEAN NOT NULL,             -- reference shares no upstream with subject
+    detail          JSON,
+    recorded_at     TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
+-- Known problems in sources or in the store: errors, gaps, conflicts, ambiguities.
+CREATE TABLE IF NOT EXISTS issues (
+    issue_id        BIGINT PRIMARY KEY DEFAULT nextval('issue_seq'),
+    issue_key       VARCHAR NOT NULL UNIQUE,      -- stable key, so reruns don't duplicate
+    kind            VARCHAR NOT NULL,             -- error | gap | conflict | ambiguity
+    status          VARCHAR NOT NULL DEFAULT 'open',  -- open | reported | resolved | wontfix
+    source_id       VARCHAR,
+    domain          VARCHAR,
+    entity_id       VARCHAR,
+    metric_id       VARCHAR,
+    period_label    VARCHAR,
+    summary         VARCHAR NOT NULL,
+    evidence        JSON,
+    run_id          BIGINT,
+    created_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    updated_at      TIMESTAMP NOT NULL DEFAULT current_timestamp
+);

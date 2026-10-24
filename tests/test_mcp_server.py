@@ -59,7 +59,7 @@ def tools(db):
 
 def test_tools_are_read_only_structured_and_field_agnostic(db):
     listed = tools(db)
-    assert len(listed) == 12
+    assert len(listed) == 14
     domain_words = re.compile(r"\b(cricket|batting|bowling|players?|wickets?|runs|economy|"
                               r"wages?|inflation|cpi|eras?|salary|prices?)\b", re.I)
     for t in listed:

@@ -18,13 +18,23 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_fact_store import core
+from agent_fact_store import core, verify
 from agent_fact_store.packs.cricket import cricsheet
 
 PIPELINE = "cricket.cricsheet_register"
 PIPELINE_VERSION = "0.1.0"
 REGISTER_URL = "https://cricsheet.org/register/"
 FILES = ("people.csv", "names.csv")
+
+# Problems found in the register by inspection, recorded as issues on every load.
+KNOWN_ISSUES = [
+    {"key": "cricsheet:names:ded9240e:Anderson Cummins", "kind": "error",
+     "entity_id": "cricket.player.ded9240e",
+     "summary": "names.csv lists 'Anderson Cummins' as an alias of PJ Cummins (ded9240e), but "
+                "Anderson Cummins is a separate player in the register (AC Cummins, ad75edc3)",
+     "evidence": {"file": "names.csv", "row": "ded9240e,Anderson Cummins",
+                  "other_entity": "cricket.player.ad75edc3"}},
+]
 
 
 def download(raw_dir: Path) -> Path:
@@ -91,6 +101,9 @@ def load(con, folder: Path) -> dict:
         core.upsert_entities(con, entities)
         new_ids = core.add_identifiers(con, ids, run_id=run_id)
         new_names = core.add_names(con, names, run_id=run_id)
+        for issue in KNOWN_ISSUES:
+            verify.upsert_issue(con, source_id=cricsheet.SOURCE_ID, domain="cricket",
+                                run_id=run_id, **issue)
     except Exception:
         core.finish_run(con, run_id, rows_written=0, status="failed")
         raise

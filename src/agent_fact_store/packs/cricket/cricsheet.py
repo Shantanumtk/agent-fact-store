@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from agent_fact_store import core
+from agent_fact_store import core, verify
 
 SOURCE_ID = "cricsheet"
 PIPELINE = "cricket.cricsheet"
@@ -76,6 +76,8 @@ class Aggregate:
     genders: dict[str, str] = field(default_factory=dict)
     coverage: Counter = field(default_factory=Counter)  # (year, format) -> matches
     unregistered: Counter = field(default_factory=Counter)  # names missing an ID
+    numbers: dict[tuple[str, str], dict[int, str]] = field(
+        default_factory=lambda: defaultdict(dict))  # (gender, format) -> {match number: date}
 
 
 def download(dataset: str, raw_dir: Path) -> tuple[Path, str, str]:
@@ -113,6 +115,8 @@ def add_match(agg: Aggregate, match: dict) -> None:
     fmt = info["match_type"]
     registry = info["registry"]["people"]
     agg.coverage[(year, fmt)] += 1
+    if (number := info.get("match_type_number")) is not None:
+        agg.numbers[(info["gender"], fmt)][int(number)] = info["dates"][0]
 
     def pid(name: str) -> str | None:
         player_id = registry.get(name)
@@ -189,6 +193,35 @@ def to_observations(agg: Aggregate) -> list[dict]:
     return rows
 
 
+GENDER_LABEL = {"male": "Men's", "female": "Women's"}
+COVERAGE_METHOD = (
+    "Official match numbers are sequential, so numbers missing between covered matches are "
+    "missing matches, and numbers before the first covered match are not covered at all. "
+    "A missing match is placed in the year of the covered match before it. A few numbers "
+    "belong to matches abandoned without a ball bowled, which have no data to miss.")
+
+
+def coverage_periods(numbers: dict[int, str], fmt: str) -> list[dict]:
+    """Per-year and whole-dataset coverage from official match numbers."""
+    ordered = sorted(numbers)
+    missing_by_year: dict[str, list[str]] = defaultdict(list)
+    for prev, nxt in zip(ordered, ordered[1:]):
+        for n in range(prev + 1, nxt):
+            missing_by_year[numbers[prev][:4]].append(
+                f"{fmt} #{n} (between {numbers[prev]} and {numbers[nxt]})")
+    present_by_year = Counter(d[:4] for d in numbers.values())
+    periods = [{"period_label": year, "present": present_by_year[year],
+                "expected": present_by_year[year] + len(missing_by_year[year]),
+                "missing": missing_by_year[year]}
+               for year in sorted(set(present_by_year) | set(missing_by_year))]
+    gaps = sum(len(v) for v in missing_by_year.values())
+    periods.append({
+        "period_label": "all", "present": len(ordered), "expected": ordered[-1],
+        "missing": [f"{fmt} #1 to #{ordered[0] - 1} (before coverage starts)"] * (ordered[0] > 1)
+                   + [f"{gaps} matches missing between {fmt} #{ordered[0]} and #{ordered[-1]}"]})
+    return periods
+
+
 def entity_id(cricsheet_id: str) -> str:
     return f"cricket.player.{cricsheet_id}"
 
@@ -232,6 +265,11 @@ def load(con, zip_path: Path, *, source_url: str, raw_sha256: str | None = None)
         core.finish_run(con, run_id, rows_written=0, status="failed")
         raise
     core.finish_run(con, run_id, rows_written=counts["inserted"])
+    for (gender, fmt), numbers in agg.numbers.items():
+        verify.record_coverage(
+            con, source_id=SOURCE_ID, domain="cricket", dataset=f"{GENDER_LABEL[gender]} {fmt} matches",
+            scope={"context": {"format": fmt}, "attributes": {"gender": gender}},
+            periods=coverage_periods(numbers, fmt), method=COVERAGE_METHOD)
     return {"run_id": run_id, "players": len(agg.names),
             "matches": sum(agg.coverage.values()), "coverage": dict(agg.coverage),
             "unregistered_names": dict(agg.unregistered), **counts}

@@ -22,10 +22,14 @@ def connect(path: str | Path = ":memory:") -> duckdb.DuckDBPyConnection:
 
 def register_source(con, source_id: str, name: str, license: str, commercial_use: bool,
                     homepage_url: str | None = None, license_url: str | None = None,
-                    attribution: str | None = None) -> None:
+                    attribution: str | None = None, upstream: str | None = None) -> None:
     con.execute(
-        """INSERT OR REPLACE INTO sources VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        [source_id, name, homepage_url, license, license_url, commercial_use, attribution],
+        """INSERT OR REPLACE INTO sources
+             (source_id, name, homepage_url, license, license_url, commercial_use,
+              attribution, upstream)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        [source_id, name, homepage_url, license, license_url, commercial_use, attribution,
+         upstream],
     )
 
 
@@ -275,7 +279,8 @@ def record_observations(con, rows: list[dict], *, source_id: str, run_id: int | 
     Same rules: unchanged values are skipped, changed values supersede the old version.
     Each row needs entity_id, metric_id and value (or value_text); period_label,
     period_start, period_end, context and unit are optional. Derived facts also pass
-    license (combined from their inputs) and inputs_hash. Keys must be unique.
+    license (combined from their inputs) and inputs_hash. A row's own source_url, if
+    given, overrides the batch one. Keys must be unique.
     Returns counts of inserted, superseded and unchanged facts."""
     license_ = con.execute(
         "SELECT license FROM sources WHERE source_id = ?", [source_id]
@@ -290,7 +295,7 @@ def record_observations(con, rows: list[dict], *, source_id: str, run_id: int | 
         "entity_id": "VARCHAR", "metric_id": "VARCHAR", "period_label": "VARCHAR",
         "period_start": "DATE", "period_end": "DATE", "context": "VARCHAR",
         "value": "DOUBLE", "value_text": "VARCHAR", "unit": "VARCHAR",
-        "license": "VARCHAR", "inputs_hash": "VARCHAR",
+        "license": "VARCHAR", "inputs_hash": "VARCHAR", "source_url": "VARCHAR",
     })
 
     params = {"source_id": source_id}
@@ -314,7 +319,8 @@ def record_observations(con, rows: list[dict], *, source_id: str, run_id: int | 
                value, value_text, unit, source_id, source_url, fetched_at, run_id, license,
                inputs_hash)
             SELECT s.entity_id, s.metric_id, s.period_start, s.period_end, s.period_label,
-                   s.context, s.value, s.value_text, s.unit, $source_id, $source_url,
+                   s.context, s.value, s.value_text, s.unit, $source_id,
+                   coalesce(s.source_url, $source_url),
                    $fetched_at, $run_id, coalesce(s.license, $license), s.inputs_hash
             FROM _staging s
             WHERE NOT EXISTS (SELECT 1 FROM observations o WHERE {_SAME_KEY})""",

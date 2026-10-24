@@ -75,9 +75,10 @@ def build(con) -> dict:
                 members={"entity_ids": [group_id]})
 
     # 2. player totals over everything covered
-    for metric in ("cricket.batting.runs", "cricket.batting.dismissals",
-                   "cricket.batting.balls_faced", "cricket.bowling.runs_conceded",
-                   "cricket.bowling.wickets", "cricket.bowling.balls"):
+    for metric in ("cricket.matches", "cricket.batting.innings", "cricket.batting.runs",
+                   "cricket.batting.dismissals", "cricket.batting.balls_faced",
+                   "cricket.bowling.runs_conceded", "cricket.bowling.wickets",
+                   "cricket.bowling.balls"):
         steps[f"covered {metric}"] = derive.aggregate(
             con, metric, over="periods", label=ALL_LABEL, members=PERSONS, source=RAW)
 
