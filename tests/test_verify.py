@@ -110,3 +110,42 @@ def test_issue_status_survives_reruns(con):
     con.execute("UPDATE issues SET status = 'reported'")
     verify.upsert_issue(con, key="k", kind="error", summary="second")
     assert con.execute("SELECT status, summary FROM issues").fetchone() == ("reported", "second")
+
+
+def disputed(con):
+    a = put(con, "p1", "score", "career", 100, "official")
+    put(con, "p1", "score", "career", 120, "encyclopedia")
+    verify.compare(con, "score", reference_source="encyclopedia", period="career")
+    return a, verify.conflict_key("score", "p1", "career", "encyclopedia", {})
+
+
+@pytest.mark.parametrize("verdict, status, confidence, issue_status", [
+    ("subject_correct", "reviewed", 0.75, "resolved"),
+    ("reference_correct", "refuted", 0.1, "resolved"),
+    ("undetermined", "disputed", 0.25, "open"),
+])
+def test_human_review_settles_a_dispute(con, verdict, status, confidence, issue_status):
+    fact, key = disputed(con)
+    verify.review_issue(con, key, verdict=verdict, checked_against="the official book",
+                        checked_on="2026-10-24", reviewer="tester", observed={"score": 100})
+    result = verify.assess(con, [fact])[fact]
+    assert (result["check_status"], result["confidence"]) == (status, confidence)
+    assert con.execute("SELECT status FROM issues").fetchone()[0] == issue_status
+
+
+def test_review_survives_rerunning_the_checks(con):
+    fact, key = disputed(con)
+    verify.review_issue(con, key, verdict="subject_correct", checked_against="book",
+                        checked_on="2026-10-24", reviewer="tester")
+    verify.compare(con, "score", reference_source="encyclopedia", period="career")
+    verify.review_issue(con, key, verdict="subject_correct", checked_against="book",
+                        checked_on="2026-10-24", reviewer="tester")   # re-applied: no duplicate
+    assert verify.assess(con, [fact])[fact]["check_status"] == "reviewed"
+    assert con.execute("SELECT count(*) FROM reviews").fetchone()[0] == 1
+    assert con.execute("SELECT status FROM issues").fetchone()[0] == "resolved"
+
+
+def test_review_needs_an_existing_issue(con):
+    with pytest.raises(ValueError, match="no issue"):
+        verify.review_issue(con, "conflict:nothing", verdict="subject_correct",
+                            checked_against="x", checked_on="2026-10-24", reviewer="t")

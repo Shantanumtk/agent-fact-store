@@ -16,6 +16,11 @@ Confidence means "independent sources agree", never "this is true":
     agreement from k independent sources                        1 - 0.5^(k+1)
                                                                   (k=1: 0.75, k=2: 0.875)
     conflict with any independent source                        0.25  disputed
+    conflict, then a human review found this fact correct       0.75  reviewed
+    conflict, then a human review found the other source right  0.1   refuted
+
+A review is a person checking a disputed value against a source by hand. It is recorded
+as evidence about the dispute, not as data: the reviewed source's figures are not loaded.
 
 Two sources are independent unless they share an upstream (sources.upstream), or are
 the same source. A derived fact's sources are the raw sources behind it.
@@ -140,8 +145,8 @@ def compare(con, metric_id: str, *, reference_source: str, period: str,
                      r["value"], diff, status, ref_group not in subject_groups,
                      json.dumps(detail, sort_keys=True)])
         if status == "conflict":
-            upsert_issue(con, key=f"conflict:{metric_id}:{s['entity_id']}:{period}:"
-                                  f"{reference_source}:{s['context']}",
+            upsert_issue(con, key=conflict_key(metric_id, s["entity_id"], period,
+                                               reference_source, s["context"]),
                          kind="conflict", source_id=reference_source,
                          domain=_domain(con, s["entity_id"]), entity_id=s["entity_id"],
                          metric_id=metric_id, period_label=period, run_id=run_id,
@@ -175,12 +180,22 @@ def assess(con, obs_ids: list[int]) -> dict[int, dict]:
     by_fact: dict[int, list] = {}
     for obs_id, status, independent, ref, check_id in rows:
         by_fact.setdefault(obs_id, []).append((status, independent, ref, check_id))
+    verdicts = dict(con.execute(
+        """SELECT (i.evidence->>'subject_fact')::BIGINT, arg_max(r.verdict, r.review_id)
+           FROM issues i JOIN reviews r USING (issue_key)
+           WHERE list_contains(?, (i.evidence->>'subject_fact')::BIGINT)
+           GROUP BY 1""", [list(obs_ids)]).fetchall())
     out = {}
     for obs_id in obs_ids:
         checks = by_fact.get(obs_id, [])
         independent = [c for c in checks if c[1]]
         agreeing = {c[2] for c in independent if c[0] == "agree"}
-        if any(c[0] == "conflict" for c in independent):
+        verdict = verdicts.get(obs_id)
+        if verdict == "subject_correct":
+            status, confidence = "reviewed", 0.75
+        elif verdict == "reference_correct":
+            status, confidence = "refuted", 0.1
+        elif any(c[0] == "conflict" for c in independent):
             status, confidence = "disputed", 0.25
         elif agreeing:
             status, confidence = "corroborated", 1 - 0.5 ** (len(agreeing) + 1)
@@ -212,6 +227,39 @@ def upsert_issue(con, *, key: str, kind: str, summary: str, source_id: str | Non
                status = coalesce(?, issues.status)""",
         [key, kind, status, source_id, domain, entity_id, metric_id, period_label, summary,
          json.dumps(evidence or {}, sort_keys=True), run_id, status])
+
+
+def conflict_key(metric_id: str, entity_id: str, period: str, reference_source: str,
+                 context: str | dict) -> str:
+    """The issue key compare uses for a conflict, so reviews can refer to it."""
+    if isinstance(context, dict):
+        context = json.dumps(context, sort_keys=True)
+    return f"conflict:{metric_id}:{entity_id}:{period}:{reference_source}:{context}"
+
+
+def review_issue(con, issue_key: str, *, verdict: str, checked_against: str,
+                 checked_on: str, reviewer: str, observed: dict | None = None,
+                 note: str | None = None) -> None:
+    """Record that a person checked an issue by hand. A clear verdict resolves the issue;
+    'undetermined' keeps it open with the review attached."""
+    if verdict not in ("subject_correct", "reference_correct", "undetermined"):
+        raise ValueError("verdict must be subject_correct, reference_correct or undetermined")
+    if con.execute("SELECT 1 FROM issues WHERE issue_key = ?", [issue_key]).fetchone() is None:
+        raise ValueError(f"no issue {issue_key!r}; run the checks that detect it first")
+    already = con.execute(
+        """SELECT 1 FROM reviews WHERE issue_key = ? AND verdict = ? AND checked_against = ?
+             AND checked_on = ?::DATE AND reviewer = ?""",
+        [issue_key, verdict, checked_against, checked_on, reviewer]).fetchone()
+    if not already:
+        con.execute(
+            """INSERT INTO reviews (issue_key, verdict, checked_against, checked_on, reviewer,
+                                    observed, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [issue_key, verdict, checked_against, checked_on, reviewer,
+             json.dumps(observed or {}, sort_keys=True), note])
+    if verdict != "undetermined":
+        con.execute("UPDATE issues SET status = 'resolved', updated_at = now() "
+                    "WHERE issue_key = ?", [issue_key])
 
 
 # ---------------------------------------------------------------- helpers

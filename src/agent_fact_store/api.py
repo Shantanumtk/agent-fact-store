@@ -376,12 +376,17 @@ def list_issues(con, status: str | None = None, kind: str | None = None,
             params.append(value)
     limit = _limit(limit)
     rows = _rows(con, f"""
-        SELECT issue_id, kind, status, source_id, domain, entity_id, metric_id, period_label,
-               summary, evidence, created_at, updated_at
+        SELECT issue_id, issue_key, kind, status, source_id, domain, entity_id, metric_id,
+               period_label, summary, evidence, created_at, updated_at
         FROM issues WHERE {' AND '.join(where)}
         ORDER BY updated_at DESC, issue_id LIMIT ? OFFSET ?""", params + [limit + 1, offset])
     for r in rows:
         r["evidence"] = json.loads(r["evidence"] or "{}")
+        r["reviews"] = _rows(con, """
+            SELECT verdict, checked_against, checked_on, reviewer, observed, note
+            FROM reviews WHERE issue_key = ? ORDER BY review_id""", [r.pop("issue_key")])
+        for review in r["reviews"]:
+            review["observed"] = json.loads(review["observed"] or "{}")
     return _page(rows, limit, offset)
 
 
@@ -399,7 +404,8 @@ SQL_TABLES = (
     "checks(check_id, entity_id, metric_id, subject_obs_id, reference_obs_id, status, "
     "independent, detail JSON); coverage / current_coverage(source_id, domain, dataset, "
     "scope JSON, period_label, expected, present, missing JSON); issues(issue_id, kind, "
-    "status, source_id, entity_id, metric_id, period_label, summary, evidence JSON)")
+    "status, source_id, entity_id, metric_id, period_label, summary, evidence JSON); "
+    "reviews(issue_key, verdict, checked_against, checked_on, reviewer, observed JSON, note)")
 
 
 def run_sql(con, sql: str, limit: int = 200, timeout_seconds: float = 10.0) -> dict:

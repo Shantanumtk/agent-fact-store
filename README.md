@@ -219,6 +219,8 @@ The server opens the store read-only. Stop it before running pipelines, which ne
 | `corroborated` | 1 − 0.5^(k+1) | k independent sources agree (0.75 for one, 0.875 for two) |
 | `not_comparable` | 0.5 | The sources count different samples |
 | `disputed` | 0.25 | An independent source conflicts |
+| `reviewed` | 0.75 | Disputed, then a person checked by hand and found this fact correct |
+| `refuted` | 0.1 | Disputed, then a person checked by hand and found the other source correct |
 
 **Coverage.** Cricsheet records each match's official number, which is sequential, so missing numbers are missing matches. For men's Tests the store holds 896 of the 2,637 played: none of #1–#1577, and 164 gaps after that. Results carry these gaps as coverage notes.
 
@@ -241,7 +243,19 @@ What it found on real data:
 | Mithali Raj | 4 Tests | 12 Tests | not comparable: 129 women's Tests missing |
 | Nazmul Hossain Shanto | 43 Tests, 2,424 runs | 43 Tests, 2,663 runs | disputed, 0.25 |
 
-Settling disputes like these needs a third independent source. ESPNcricinfo would be the natural one, but its terms don't allow scraping.
+Settling disputes like these needs a third independent source. ESPNcricinfo is the natural one, but its terms (Disney's) forbid automated extraction, scraping and AI use, so it is never collected automatically.
+
+**Human review.** Instead, a person can check a dispute by hand and record the verdict (`verify.review_issue`). The review is evidence about the dispute; the figures seen are not loaded as data. Reviews live in code ([`packs/cricket/reviews.py`](src/agent_fact_store/packs/cricket/reviews.py)), so they are re-applied after any rebuild. First round, checked against ESPNcricinfo player pages:
+
+| Player | Cricsheet | Wikipedia | Checked by hand | Verdict |
+|---|---|---|---|---|
+| Kranti Gaud | 2 runs | 1 | 2 | Cricsheet correct |
+| Rahat Ali | 136 runs | 94 | 136 | Cricsheet correct |
+| Kasun Rajitha | 145 runs | 133 | 145 (Cricsheet is missing one Test in which he didn't score) | Cricsheet correct |
+| Najmul Hossain Shanto | 2,424 runs, 43 Tests | 2,663, 43 Tests | 2,805, 45 Tests | Undetermined: both sources are behind |
+| T Kaitano | 186 runs, 4 Tests | 206, 4 Tests | 258, 6 Tests | Undetermined: both sources are behind |
+
+Where a verdict was possible, Cricsheet was right every time. Both sources lag recent matches, which career totals can't untangle; that needs match-by-match comparison.
 
 ## Lineage
 
@@ -259,6 +273,7 @@ These are also in the issues register (`list_issues`), with evidence.
 
 - Cricsheet's `names.csv` lists "Anderson Cummins" as an alias of Pat Cummins (`ded9240e`), although Anderson Cummins is a separate player (`ad75edc3`). The alias is kept as published, with its provenance.
 - Cricsheet's register has two entries for Margaret Ngoche (`a5ff11c2` and `f91abcd6`), which Wikidata maps to one person. The Wikidata IDs are left unlinked until this is resolved.
+- Cricsheet spells Kranti Gaud as "K Goud" with no full-name alias, so searching "Kranti Gaud" doesn't find her.
 - Wikipedia infoboxes contain errors. Usman Salahuddin's lists 1 Test, 37 runs and an average of 27.29, which is impossible with at most two innings. 119 batting averages conflict with Cricsheet even where matches and runs agree, so these are kept as disputed rather than trusted either way.
 
 ## Roadmap

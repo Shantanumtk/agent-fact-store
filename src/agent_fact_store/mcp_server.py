@@ -232,7 +232,8 @@ def build_server(db_path: str) -> MCPServer:
         limit: Limit = 50, offset: Offset = 0,
     ) -> dict[str, Any]:
         """Known problems: errors found in sources, conflicts between sources, and
-        ambiguous identities, each with evidence and a triage status."""
+        ambiguous identities, each with evidence, a triage status, and any human reviews
+        (who checked what, when, and their verdict)."""
         return call(api.list_issues, status, kind, domain, entity_id, limit, offset)
 
     @tool()

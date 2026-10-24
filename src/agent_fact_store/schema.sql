@@ -192,3 +192,20 @@ CREATE TABLE IF NOT EXISTS issues (
     created_at      TIMESTAMP NOT NULL DEFAULT current_timestamp,
     updated_at      TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
+
+CREATE SEQUENCE IF NOT EXISTS review_seq START 1;
+
+-- Human reviews of issues: someone checked the disputed value against a source by hand.
+-- Kept apart from issues so a rebuild that re-detects the issue keeps its reviews.
+CREATE TABLE IF NOT EXISTS reviews (
+    review_id       BIGINT PRIMARY KEY DEFAULT nextval('review_seq'),
+    issue_key       VARCHAR NOT NULL,
+    verdict         VARCHAR NOT NULL,             -- subject_correct | reference_correct
+                                                  -- | undetermined
+    checked_against VARCHAR NOT NULL,             -- what the reviewer looked at
+    checked_on      DATE NOT NULL,
+    reviewer        VARCHAR NOT NULL,
+    observed        JSON,                         -- what the reviewer saw, briefly
+    note            VARCHAR,
+    recorded_at     TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
